@@ -1,24 +1,44 @@
 #!/usr/bin/env python3
 
+import sys
+import locale
+import pdb
+import time
+import pickle
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import geopandas 
+import imdb
 import plotly.graph_objects as go
 import plotly.express as px
-import pandas as pd
-import numpy as np
-import sys
-import imdb
-import geopandas 
-import pdb
 import geopy
+from geopy.extra.rate_limiter import RateLimiter
 
 ia = imdb.IMDb()
 
+imdb_cache_path = 'imdb_cache.p'
+
+imdb_cache = dict()
+if Path(imdb_cache_path).exists():
+  imdb_cache = pickle.load(open(imdb_cache_path, 'rb'))
+
+def imdb_search(mov_str):
+  if mov_str not in imdb_cache:
+    mov_id = ia.search_movie(mov_str)[0].movieID # assuming the 1st is the best match.
+    full_mov = ia.get_movie(mov_id)
+    # https://imdbpy.readthedocs.io/en/latest/usage/data-interface.html
+    ia.update(full_mov, info=['locations', 'release dates'])
+    imdb_cache[mov_str] = full_mov
+  return imdb_cache[mov_str]
+
+
 def get_movie_info(input_file):
-  df = pd.read_csv('data/GoodMovies2020.csv')
+  df = pd.read_csv(input_file)
   df['Date Watched'] = pd.to_datetime(df['Date Watched'])
-  all_movie_ids = df['Movie Name'].apply(lambda x: ia.search_movie(x)[0].movieID) # assuming the 1st is the best match.
-  full_movies = [ia.get_movie(mID) for mID in all_movie_ids]
-  # https://imdbpy.readthedocs.io/en/latest/usage/data-interface.html
-  [ia.update(movie_obj, info=['locations', 'release dates']) for movie_obj in full_movies]
+  full_movies = df['Movie Name'].apply(lambda x: imdb_search(x))
+  pickle.dump(imdb_cache, open(imdb_cache_path, 'wb'))
   df['index'] = df.index # So you can index into the movie list, which can't be added to the df
   return df, full_movies
 
@@ -65,58 +85,102 @@ def normalize_location_str(str_loc):
   if '::' in str_loc:
     str_loc = str_loc.split('::')[0]
   if ' USA' in str_loc:
-    str_loc = str_loc.removesuffix(' USA')
+    str_loc = str_loc.replace(' USA', '')
   if ' - ' in str_loc:
     str_loc = str_loc.split(' - ')[1]
   return str_loc
 
-called_set = set()
+def my_geocode(query):
+  if query not in cache:
+    cache[query] = query_geocoder_server(query)
+  return cache[query]
 
+cache_path = 'cache.p'
 
-def get_locs(df_x, full_movies):
+cache = dict()
+if Path(cache_path).exists():
+  cache = pickle.load(open(cache_path, 'rb'))
+
+def query_geocoder_server(query):
+  time.sleep(5)
+  return geolocator.geocode(query)
+
+geolocator = geopy.Nominatim(user_agent='movies_watched_2020')
+
+def get_locs(df, full_movies):
   d = {'Movie Name': [], 'lat': [], 'lon': []}
-  if 'Movie Name' not in df_x.columns:
-    # ??? Why does this happen?
-    pdb.set_trace()
-    return pd.DataFrame(d)
-  print(df_x)
-  name = df_x.iloc[0]['Movie Name']
-  if name in called_set:
-    pdb.set_trace()
-  else:
-    called_set.add(name)
-  locator = geopy.Nominatim(user_agent='movies_2020')
-  for str_loc in full_movies[df_x.iloc[0]['index']].get('locations'):
-    str_loc = normalize_location_str(str_loc)
-    loc = locator.geocode(str_loc)
-    if loc is None:
-      print('\tSkipping ' + str_loc)
+  for row in df.itertuples():
+    name = row._1
+    print(name)
+    all_locs = full_movies[row.index].get('locations')
+    if all_locs is None:
       continue
-    else:
-      print('Using ' + str_loc)
-    d['Movie Name'].append(name)
-    d['lat'].append(loc.latitude)
-    d['lon'].append(loc.longitude)
+    for str_loc in full_movies[row.index].get('locations'):
+      str_loc = normalize_location_str(str_loc)
+      loc = my_geocode(str_loc)
+      if loc is None:
+        print('\tSkipping ' + str_loc)
+        continue
+      else:
+        print('Using ' + str_loc)
+      d['Movie Name'].append(name)
+      d['lat'].append(loc.latitude)
+      d['lon'].append(loc.longitude)
+      # break # For now: try again later, once we have persistant caching in place for geopy
   return pd.DataFrame(d)
 
 def filming_locations(df, full_movies, out_f):
-  loc_df = df.groupby('Movie Name', group_keys=False).apply(lambda df_x: get_locs(df_x, full_movies)).reset_index(drop=True)
+  loc_df = get_locs(df, full_movies) 
+  pickle.dump(cache, open(cache_path, 'wb'))
+  loc_df['size'] = 12
+  fig = px.line_mapbox(loc_df, lat='lat', lon='lon', color='Movie Name') # , size='size')
+  fig.update_layout(mapbox_style='stamen-terrain')
+  out_f.write(fig.to_html(full_html=True, include_plotlyjs='cdn'))
+  return fig
+
+
+def genres_plot(df, full_movies, out_f):
+  # TODO(brycew): improve this viz
+  genre_list = full_movies.apply(lambda x: x.get('genres')).explode()
+  fig = px.bar(genre_list.value_counts())
+  out_f.write(fig.to_html(full_html=True, include_plotlyjs='cdn'))
+  return fig
+
+def budgets_violin_plot(df, full_movies, out_f):
+  locale.setlocale(locale.LC_ALL, 'en_US.UTF8')
+  def grab_budget(dx):
+    if 'box office' not in dx.data or 'Budget' not in dx.data['box office']:
+      return np.nan
+    else:
+      val = dx.data['box office']['Budget'].replace(' (estimated)', '')
+      mult = 1.22 if val.startswith('EUR') else 1
+      return locale.atof(val.strip('$').strip('EUR')) * mult
+
+  buds = full_movies.apply(grab_budget).dropna()
+  df2 = pd.DataFrame()
+  df2['budget'] = buds
+  df2['name'] = df['Movie Name']
+  df2 = df2.sort_values('budget')
+  fig = px.violin(df2, y='budget', box=True, points='all', hover_data=df2.columns)
+  out_f.write(fig.to_html(full_html=True, include_plotlyjs='cdn'))
+  return fig
+  
 
 # TODO(brycew): at least 3 more viz:
-# * map of filming locations (movie.data['locations'])
 # * graph of actors / BTS, movies are edges
 #   * https://plotly.com/python/network-graphs/
-# * genre-mashing count: (movie.data['genres'])
 # * number of women/PoC BTS and actors
 # * budgets of the movies (just on a density/violin 1D plot) (movie.data['box office'][1]), strip estimated
 
 
 def main(argv):
-  df, full_movies = get_movie_info("data/GoodMovies2020.csv")
+  df, full_movies = get_movie_info("../data/GoodMovies2020.csv")
   with open('plot1.html', 'w') as out_f1:
     combo_timeline(df, out_f1)
   with open('plot2.html', 'w') as out_f2:
     star_plot(df, out_f2)
+  with open('plot3.html', 'w') as out_f3:
+    filming_locations(df, full_movies, out_f3)
 
 
 if __name__ == '__main__':
