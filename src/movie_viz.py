@@ -6,6 +6,9 @@ import pdb
 import time
 import pickle
 from pathlib import Path
+import collections
+import itertools
+import networkx as nx
 
 import numpy as np
 import pandas as pd
@@ -165,6 +168,29 @@ def budgets_violin_plot(df, full_movies, out_f):
   out_f.write(fig.to_html(full_html=True, include_plotlyjs='cdn'))
   return fig
   
+
+def gather_cast_crew(full_movies):
+  for artist_type in ['directors', 'cast']:
+    artists = collections.defaultdict(int)
+    for mov in full_movies:
+      print(mov.data['original title'])
+      if artist_type in mov.data:
+        for name in mov.data[artist_type]:
+          artists[name] += 1
+    G = nx.Graph()
+    for d_count in artists.items():
+      if d_count[1] > 1:
+        G.add_node(d_count[0], type=artist_type, count=d_count[1])
+    for mov in full_movies:
+      if artist_type in mov.data:
+        all_to_add = []
+        for name in mov.data[artist_type]:
+          if any([node for node in G.nodes(data=True) if node[0].personID == name.personID]):
+            all_to_add.append(name)
+        G.add_edges_from(itertools.combinations(all_to_add, 2))
+  #nx.draw_spring(G, with_labels=True)
+  return G 
+
 
 # TODO(brycew): at least 3 more viz:
 # * graph of actors / BTS, movies are edges
