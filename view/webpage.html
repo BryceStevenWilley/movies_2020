@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Movies 2020</title>
+        <meta charset="UTF-8"/>
+    </head>
+
+    <body>
+        <header>
+            <h1>Movies 2020</h1>
+            <h2>Made by <a href="https://brycewilley.xyz">Bryce Willey</a></h2>
+        </header>
+
+        <section>
+            ${ combo_timeline_graph }
+        </section>
+
+        <section>
+            ${ star_plot_bar_graph }
+        </section>
+
+        <section>
+            ${ budgets_graph }
+        </section>
+
+        <section>
+            ${ genre_plot }
+        </section>
+
+        <section>
+            <select class="default" id="mov_loc_selector" name="mov_loc_selector">
+                % for (name, fig) in filming_locations_graph:
+                    <option value="${ name }" 
+                      % if name == 'Leap Year':
+                       selected 
+                      % endif
+                    >${ name }</option>
+                % endfor
+            </select>
+            % for (name, fig) in filming_locations_graph:
+                <div id="${ name }"
+                  % if name != 'Leap Year': 
+                      style="display:none"
+                  % endif>
+                ${ fig }
+                </div>
+            % endfor
+        </section>
+
+    </body>
+    <script>
+        var elem = document.getElementById('mov_loc_selector');
+        elem.onchange = function() {
+            Array.from(document.querySelector('#mov_loc_selector').options).forEach((option_elem) => {
+                var hiddenDiv = document.getElementById(option_elem.value);
+                hiddenDiv.style.display = (this.value == option_elem.value) ? "block": "none";
+            });
+        }
+    </script>
+</html>
