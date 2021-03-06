@@ -5,11 +5,10 @@ import locale
 import pdb
 import time
 import pickle
-from pathlib import Path
 import collections
 import itertools
 import networkx as nx
-from mako.template import Template
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,23 +18,33 @@ import plotly.graph_objects as go
 import plotly.express as px
 import geopy
 from geopy.extra.rate_limiter import RateLimiter
+from mako.template import Template
 
 
 mov_cache_f = Path(__file__).resolve().parent.joinpath('imdb_cache.p')
 imdb_cache = pickle.load(mov_cache_f.open('rb')) if mov_cache_f.exists() else dict()
 
 ia = imdb.IMDb()
-def imdb_search(mov_str):
-    if mov_str not in imdb_cache:
-        mov_id = ia.search_movie(mov_str)[0].movieID  # assuming the 1st is the best match.
+def imdb_search(movie: str):
+    """Grabs the movie from the imdb cache if present, otherwise adds in to the cache"""
+    if movie not in imdb_cache:
+        mov_id = ia.search_movie(movie)[0].movieID  # assuming the 1st is the best match.
         full_mov = ia.get_movie(mov_id)
         # https://imdbpy.readthedocs.io/en/latest/usage/data-interface.html
         ia.update(full_mov, info=['locations', 'release dates'])
-        imdb_cache[mov_str] = full_mov
-    return imdb_cache[mov_str]
+        imdb_cache[movie] = full_mov
+    return imdb_cache[movie]
 
 
-def get_movie_info(input_file):
+def get_movie_info(input_file: str):
+    """Gets personal movie viewing data, and combines with IMDb data about each movie
+    Schema was:
+    * Movie Name
+    * Year it came out
+    * The last year that I watched it (B Last)
+    * Date watched
+    * Rating (out of 5 emoji stars)
+    """
     df = pd.read_csv(input_file)
     df['Date Watched'] = pd.to_datetime(df['Date Watched'])
     full_movies = df['Movie Name'].apply(lambda x: imdb_search(x))
@@ -45,8 +54,11 @@ def get_movie_info(input_file):
 
 
 def combo_timeline(df):
+    """Makes a scatter plot + some axis histrograms, X-axis = the date that we watched the movie, 
+    and the Y-axis was the year it was made
+    """
     df_mod = df.replace(star_vals)
-    df_mod['Good'] = (df_mod['Bryce Rating'] + df_mod['Kathy Rating'] / 2) > 3
+    df_mod['Good'] = (df_mod['B Rating'] + df_mod['K Rating'] / 2) > 3
     # https://plotly.com/python/marginal-plots/
     fig = px.scatter(df_mod, x="Date Watched", y="Year", labels='Movie Name',
                      color='Good', hover_data=['Movie Name'],
@@ -56,6 +68,7 @@ def combo_timeline(df):
     return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
 
+# Translates emoji star ratings to numbers
 star_vals = {
     "1/2": 0.5,
     "⭐": 1,
@@ -72,40 +85,54 @@ star_vals = {
 
 
 def star_plot(df):
+    """Tries to make a split histrogram, with my and my partner's star ratings.
+    Attempted to make it an actual histrogram, but plotly didn't cooperate. 
+    """
     df_mod = df.replace(star_vals)
     ratings = np.linspace(0.5, 6, 12)
-    bryce_ratings = df_mod['Bryce Rating'].value_counts().reindex(ratings).replace(np.nan, 0)
-    kathy_ratings = df_mod['Kathy Rating'].value_counts().reindex(ratings).replace(np.nan, 0)
+    bryce_ratings = df_mod['B Rating'].value_counts().reindex(ratings).replace(np.nan, 0)
+    kathy_ratings = df_mod['K Rating'].value_counts().reindex(ratings).replace(np.nan, 0)
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=ratings, y=list(bryce_ratings), name='Bryce', marker_color='indianred'))
-    fig.add_trace(go.Bar(x=ratings, y=list(kathy_ratings), name='Kathy', marker_color='lightsalmon'))
+    fig.add_trace(go.Bar(x=ratings, y=list(bryce_ratings), name='B', marker_color='indianred'))
+    fig.add_trace(go.Bar(x=ratings, y=list(kathy_ratings), name='K', marker_color='lightsalmon'))
     fig.update_xaxes(tickvals=ratings)
-    #fig.add_trace(go.Histogram(df, x='Bryce Rating'))
-    #fig.add_trace(go.Histogram(df, x='Kathy Rating'))
+    #fig.add_trace(go.Histogram(df, x='B Rating'))
+    #fig.add_trace(go.Histogram(df, x='K Rating'))
     #fig.update_layout(barmode='overlay')
     #fig.update_traces(opacity=0.74) 
     # https://plotly.com/python-api-reference/generated/plotly.io.to_html.html
     return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
 
-def normalize_location_str(str_loc):
-    if str_loc == 'USA':
+def normalize_location_str(location: str) -> str:
+    """Makes geocoding for IMDb locations work a little better. 
+    
+    The IMDb location string usually includes a lot of extra information, like ", USA",
+    some specific building information, or just what scene in the movie was filmed there.
+    Stripping that information out usually results in the Nominatim geocoding service
+    more reliably returning the exact latitude-longitude for that location.
+    """
+    if location == 'USA':
         return None
-    if '::' in str_loc:
-        str_loc = str_loc.split('::')[0]
-    if ' USA' in str_loc:
-        str_loc = str_loc.replace(' USA', '')
-    if ' - ' in str_loc:
-        str_loc = str_loc.split(' - ')[1]
-    return str_loc
+    if '::' in location:
+        location = location.split('::')[0]
+    if ' USA' in location:
+        location = location.replace(' USA', '')
+    if ' - ' in location:
+        location = location.split(' - ')[1]
+    return location
 
 
 geolocator = geopy.Nominatim(user_agent='movies_watched_2020')
 def query_geocoder_server(query):
+    """Enforces the Nominatim usage policy
+    https://operations.osmfoundation.org/policies/nominatim/ 
+    """
     time.sleep(5)
     return geolocator.geocode(query)
 
 
+# Sets up a cache for nominatim queries, also necessary as part of the usage policy
 geo_cache_f = Path(__file__).parent.resolve().joinpath('cache.p')
 geo_cache = pickle.load(geo_cache_f.open('rb')) if geo_cache_f.exists() else dict()
 def my_geocode(query):
@@ -117,6 +144,7 @@ def my_geocode(query):
 
 
 def get_locs(df, full_movies):
+    """Goes through a whole dataframe of movies and retrieves their lat-long coordinates"""
     d = {'Movie Name': [], 'lat': [], 'lon': []}
     for row in df.itertuples():
         name = row._1
@@ -134,6 +162,9 @@ def get_locs(df, full_movies):
 
 
 def filming_locations(df, full_movies):
+    """Makes maps of all the filming locations of a movie. Pretty cool, and somehow,
+    not an IMDb already? Hire me, I'll make that feature for y'all.
+    """
     loc_df = get_locs(df, full_movies)
     pickle.dump(geo_cache, geo_cache_f.open('wb'))
     loc_df['size'] = 12
@@ -149,6 +180,7 @@ def filming_locations(df, full_movies):
 
 
 def genres_plot(df, full_movies):
+    """Simple bar plot of number of movies of each genre that we watched. Sorted by count."""
     genre_list = full_movies.apply(lambda x: x.get('genres')).explode()
     fig = px.bar(genre_list.value_counts())
     fig.update_layout(width=2000, height=1000) 
@@ -178,6 +210,12 @@ def budgets_violin_plot(df, full_movies):
 
 
 def gather_cast_crew(full_movies):
+    """ Makes a graph of actors / behind-the-scenes crew. movies are edges between them
+    
+    https://plotly.com/python/network-graphs/
+    Didn't actually use or polish at all, it's really hard to gain any information from them.
+    The networks get really dense and impossible to understand
+    """
     for artist_type in ['directors', 'cast']:
         artists = collections.defaultdict(int)
         for mov in full_movies:
@@ -200,14 +238,17 @@ def gather_cast_crew(full_movies):
     return G 
 
 
-# TODO(brycew): at least 3 more viz:
-# * graph of actors / BTS, movies are edges
-#   * https://plotly.com/python/network-graphs/
-# * number of women/PoC BTS and actors
+# Some more graph ideas that I never finished:
+# * number of women/PoC behind-the-scenes crew and actors
+#    * I don't think IMDb has standardized data for that (besides gender), so would have to gather by hand
 
 
 def main(argv):
-    df, full_movies = get_movie_info("./data/GoodMovies2020.csv")
+    if len(argv) == 2:
+        movie_data_file = argv[1]
+    else:
+        movie_data_file = './data/GoodMovies2020.csv'
+    df, full_movies = get_movie_info(movie_data_file)
     combo_timeline_graph = combo_timeline(df)
     star_plot_bar_graph = star_plot(df)
     filming_locations_graph = filming_locations(df, full_movies)

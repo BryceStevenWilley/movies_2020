@@ -1,15 +1,23 @@
-Would like to do it in TS / React, but will likely settle on python, no web dev
+# Visualizing Movies
 
+Gives you some interesting visualizations about movie viewing data.
 
-For Python:
-* https://imdbpy.readthedocs.io/en/latest/usage/index.html
-* https://datasets.imdbws.com/
-* https://www.imdb.com/interfaces/
+Didn't really polish all that much. I made the wrong technical choice going for Plotly when I really did need something more flexible like D3. Oh well.
 
-Still needs a good graphing library, something like D3, but for python. Not sure what to use yet, maybe just a juypter notebook (although the emphasis will be on the code. :/)
+## Installation
 
+* Install Python3 on your system
+* Make a virtual env and source into it
+* `pip install -r requirements.txt`
+* `./src/movie_viz.py <path to input file>`
 
+## Your input data
 
-For web: 
-* file:///tmp/mozilla_brycew0/Documentation%20&%20Data%20Dictionary%20-%20IMDb%20and%20Box%20Office%20Mojo.pdf
+WONTDO: hook this up to a service like [letterboxd](https://letterboxd.com/api-beta/)
 
+My data (obviously not included for privacy reasons) was logged in google sheets, and exported as a CSV. I logged with my partner, so the B and K columns are mine and her's. The columns I used in this viz were:
+* Movie Name
+* Year
+* Date Watched
+* K Rating
+* B Rating
